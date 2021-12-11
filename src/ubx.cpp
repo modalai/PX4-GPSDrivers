@@ -55,6 +55,10 @@
 #include "rtcm.h"
 #include "ubx.h"
 
+#ifdef __PX4_QURT
+#include <drivers/device/qurt/uart.h>
+#endif
+
 #define MIN(X,Y)              ((X) < (Y) ? (X) : (Y))
 #define SWAP16(X)             ((((X) >>  8) & 0x00ff) | (((X) << 8) & 0xff00))
 
@@ -64,8 +68,12 @@
 #define UBX_TRACE_SVINFO(...) {/*GPS_INFO(__VA_ARGS__);*/}    // NAV-SVINFO processing (debug use only, will cause rx buffer overflows)
 
 /**** Warning macros, disable to save memory */
+#ifdef __PX4_QURT
+#define UBX_WARN(...)         {GPS_ERR(__VA_ARGS__);}
+#else
 #define UBX_WARN(...)         {GPS_WARN(__VA_ARGS__);}
-#define UBX_DEBUG(...)        {/*GPS_WARN(__VA_ARGS__);*/}
+#endif
+#define UBX_DEBUG(...)        {/*GPS_INFO(__VA_ARGS__);*/}
 
 GPSDriverUBX::GPSDriverUBX(Interface gpsInterface, GPSCallbackPtr callback, void *callback_user,
 			   sensor_gps_s *gps_position, satellite_info_s *satellite_info, uint8_t dynamic_model,
@@ -2173,6 +2181,20 @@ GPSDriverUBX::sendMessage(const uint16_t msg, const uint8_t *payload, const uint
 	}
 
 	// Send message
+#ifdef __PX4_QURT
+	// Consolidate everything into a single send buffer since QURT doesn't like
+	// back to back UART transmissions for some reason.
+	// TODO: Debug QURT issue with back to back UART transmissions.
+	uint8_t temp_buf[512];
+
+	for (int i = 0; i < 6; i++) temp_buf[i] = ((uint8_t*) &header)[i];
+	for (int i = 6; i < 6 + length; i++) temp_buf[i] = payload[i - 6];
+	for (int i = 6 + length; i < 6 + length + 2; i++) temp_buf[i] = ((uint8_t*) &checksum)[i - 6 - length];
+
+	if (write((const char*) temp_buf, (size_t) 6 + length + 2) != (6 + length + 2)) {
+		return false;
+	}
+#else
 	if (write((void *)&header, sizeof(header)) != sizeof(header)) {
 		return false;
 	}
@@ -2184,6 +2206,7 @@ GPSDriverUBX::sendMessage(const uint16_t msg, const uint8_t *payload, const uint
 	if (write((void *)&checksum, sizeof(checksum)) != sizeof(checksum)) {
 		return false;
 	}
+#endif
 
 	return true;
 }
