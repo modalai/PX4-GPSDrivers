@@ -117,7 +117,11 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 	if (_interface == Interface::UART) {
 
 		/* try different baudrates */
+#ifdef __PX4_QURT
+		const unsigned baudrates[] = {9600, 115200, 230400};
+#else
 		const unsigned baudrates[] = {38400, 57600, 9600, 115200, 230400};
+#endif
 
 		unsigned baud_i;
 		unsigned desired_baudrate = auto_baudrate ? UBX_BAUDRATE_M8_AND_NEWER : baudrate;
@@ -131,7 +135,16 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 
 			UBX_DEBUG("baudrate set to %i", test_baudrate);
 
+#ifdef __PX4_QURT
+			// Check return value on Qurt. Skip baudrate on failure.
+			if (setBaudrate(test_baudrate) < 0) {
+				PX4_ERR("Failed to set baud rate %u, trying next rate", test_baudrate);
+				continue;
+			}
+			px4_usleep(500000);
+#else
 			setBaudrate(test_baudrate);
+#endif
 
 			/* flush input and wait for at least 20 ms silence */
 			decodeInit();
