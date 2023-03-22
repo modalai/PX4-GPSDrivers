@@ -140,18 +140,20 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1_DATABITS, 0, cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1_PARITY, 0, cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_UBX, 1, cfg_valset_msg_size);
+			// Note: There is no RTCM on MAX-M10S
 			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
 			// 		   cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_NMEA, 0, cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_UBX, 1, cfg_valset_msg_size);
 
 			if (_output_mode != OutputMode::GPS) {
-				// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_RTCM3X, 1, cfg_valset_msg_size);
+				cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_RTCM3X, 1, cfg_valset_msg_size);
 			}
 
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_NMEA, 0, cfg_valset_msg_size);
 			// TODO: are we ever connected to UART2?
 
+			// Note: There is no USB interface on MAX-M10S
 			// USB
 			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_UBX, 1, cfg_valset_msg_size);
 			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
@@ -167,14 +169,15 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 
 			bool cfg_valset_success = false;
 
-			int initial_message_retries = 5;
-			while (initial_message_retries--) {
-				if (sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
+			if (sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
 
-					if (waitForAck(UBX_MSG_CFG_VALSET, UBX_CONFIG_TIMEOUT, true) == 0) {
-						cfg_valset_success = true;
-						break;
-					}
+				// Note: The MAX-M10S comes up sending NMEA sentences at 9600. It can't
+				// respond with an ACK until the current sentence has completed transmission.
+				// This can take over a second so need a large timeout on this particular wait.
+				// Once it has acked this it will turn off the NMEA sentences and all is good
+				// for future transactions.
+				if (waitForAck(UBX_MSG_CFG_VALSET, 2000, true) == 0) {
+					cfg_valset_success = true;
 				}
 			}
 
