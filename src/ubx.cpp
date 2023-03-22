@@ -140,37 +140,41 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1_DATABITS, 0, cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1_PARITY, 0, cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_UBX, 1, cfg_valset_msg_size);
-			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
-					   cfg_valset_msg_size);
+			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
+			// 		   cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_NMEA, 0, cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_UBX, 1, cfg_valset_msg_size);
 
 			if (_output_mode != OutputMode::GPS) {
-				cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_RTCM3X, 1, cfg_valset_msg_size);
+				// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_RTCM3X, 1, cfg_valset_msg_size);
 			}
 
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_NMEA, 0, cfg_valset_msg_size);
 			// TODO: are we ever connected to UART2?
 
 			// USB
-			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_UBX, 1, cfg_valset_msg_size);
-			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
-					   cfg_valset_msg_size);
-			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_NMEA, 0, cfg_valset_msg_size);
-			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_UBX, 1, cfg_valset_msg_size);
-
-			if (_output_mode != OutputMode::GPS) {
-				cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_RTCM3X, 1, cfg_valset_msg_size);
-			}
-
-			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_NMEA, 0, cfg_valset_msg_size);
+			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_UBX, 1, cfg_valset_msg_size);
+			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
+			// 		   cfg_valset_msg_size);
+			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_NMEA, 0, cfg_valset_msg_size);
+			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_UBX, 1, cfg_valset_msg_size);
+			// 
+			// if (_output_mode != OutputMode::GPS) {
+			// 	cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_RTCM3X, 1, cfg_valset_msg_size);
+			// }
+			// 
+			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_NMEA, 0, cfg_valset_msg_size);
 
 			bool cfg_valset_success = false;
 
-			if (sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
+			int initial_message_retries = 5;
+			while (initial_message_retries--) {
+				if (sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
 
-				if (waitForAck(UBX_MSG_CFG_VALSET, UBX_CONFIG_TIMEOUT, true) == 0) {
-					cfg_valset_success = true;
+					if (waitForAck(UBX_MSG_CFG_VALSET, UBX_CONFIG_TIMEOUT, true) == 0) {
+						cfg_valset_success = true;
+						break;
+					}
 				}
 			}
 
@@ -543,6 +547,8 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 		rate_meas = (_board == Board::u_blox9_F9P) ? 100 : 125;
 	}
 
+	// What rate do we want for MAX_M10S?
+
 	cfgValset<uint16_t>(UBX_CFG_KEY_RATE_MEAS, rate_meas, cfg_valset_msg_size);
 	cfgValset<uint16_t>(UBX_CFG_KEY_RATE_NAV, 1, cfg_valset_msg_size);
 	cfgValset<uint8_t>(UBX_CFG_KEY_RATE_TIMEREF, 0, cfg_valset_msg_size);
@@ -658,8 +664,8 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 				   config.interface_protocols & InterfaceProtocolsMask::I2C_IN_PROT_UBX, cfg_valset_msg_size);
 		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2CINPROT_NMEA,
 				   config.interface_protocols & InterfaceProtocolsMask::I2C_IN_PROT_NMEA, cfg_valset_msg_size);
-		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2CINPROT_RTCM3X,
-				   config.interface_protocols & InterfaceProtocolsMask::I2C_IN_PROT_RTCM3X, cfg_valset_msg_size);
+		// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2CINPROT_RTCM3X,
+		// 		   config.interface_protocols & InterfaceProtocolsMask::I2C_IN_PROT_RTCM3X, cfg_valset_msg_size);
 		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2COUTPROT_UBX,
 				   config.interface_protocols & InterfaceProtocolsMask::I2C_OUT_PROT_UBX, cfg_valset_msg_size);
 		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2COUTPROT_NMEA,
@@ -824,8 +830,11 @@ bool GPSDriverUBX::cfgValsetPort(uint32_t key_id, uint8_t value, int &msg_size)
 			return false;
 		}
 
-		if (!cfgValset<uint8_t>(key_id + 3, value, msg_size)) {
-			return false;
+		// MAX_M10S has no UART2
+		if (_board != Board::u_blox10_MAX_M10S) {
+			if (!cfgValset<uint8_t>(key_id + 3, value, msg_size)) {
+				return false;
+			}
 		}
 	}
 
@@ -1709,6 +1718,10 @@ GPSDriverUBX::payloadRxAddMonVer(const uint8_t b)
 			} else if (strncmp((const char *)_buf.payload_rx_mon_ver_part1.hwVersion, "00190000",
 					   sizeof(_buf.payload_rx_mon_ver_part1.hwVersion)) == 0) {
 				_board = Board::u_blox9;
+
+			} else if (strncmp((const char *)_buf.payload_rx_mon_ver_part1.hwVersion, "000A0000",
+					   sizeof(_buf.payload_rx_mon_ver_part1.hwVersion)) == 0) {
+				_board = Board::u_blox10_MAX_M10S;
 
 			} else {
 				UBX_WARN("unknown board hw: %s", _buf.payload_rx_mon_ver_part1.hwVersion);
