@@ -140,32 +140,10 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1_DATABITS, 0, cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1_PARITY, 0, cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_UBX, 1, cfg_valset_msg_size);
-			// Note: There is no RTCM on MAX-M10S
-			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
-			// 		   cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_NMEA, 0, cfg_valset_msg_size);
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_UBX, 1, cfg_valset_msg_size);
-
-			if (_output_mode != OutputMode::GPS) {
-				cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_RTCM3X, 1, cfg_valset_msg_size);
-			}
-
 			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_NMEA, 0, cfg_valset_msg_size);
 			// TODO: are we ever connected to UART2?
-
-			// Note: There is no USB interface on MAX-M10S
-			// USB
-			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_UBX, 1, cfg_valset_msg_size);
-			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
-			// 		   cfg_valset_msg_size);
-			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_NMEA, 0, cfg_valset_msg_size);
-			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_UBX, 1, cfg_valset_msg_size);
-			// 
-			// if (_output_mode != OutputMode::GPS) {
-			// 	cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_RTCM3X, 1, cfg_valset_msg_size);
-			// }
-			// 
-			// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_NMEA, 0, cfg_valset_msg_size);
 
 			bool cfg_valset_success = false;
 
@@ -522,6 +500,40 @@ int GPSDriverUBX::configureDevicePreV27(const GNSSSystemsMask &gnssSystems)
 
 int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_baudrate)
 {
+	// There is no RTCM or USB interface on MAX-M10S
+	if (_board != Board::u_blox10_MAX_M10S) {
+
+		int cfg_valset_msg_size = initCfgValset();
+
+		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1INPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
+				   cfg_valset_msg_size);
+
+		if (_output_mode != OutputMode::GPS) {
+			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_UART1OUTPROT_RTCM3X, 1, cfg_valset_msg_size);
+		}
+
+		// USB
+		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_UBX, 1, cfg_valset_msg_size);
+		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_RTCM3X, _output_mode == OutputMode::RTCM ? 0 : 1,
+				   cfg_valset_msg_size);
+		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBINPROT_NMEA, 0, cfg_valset_msg_size);
+		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_UBX, 1, cfg_valset_msg_size);
+		
+		if (_output_mode != OutputMode::GPS) {
+			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_RTCM3X, 1, cfg_valset_msg_size);
+		}
+		
+		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_USBOUTPROT_NMEA, 0, cfg_valset_msg_size);
+
+		if (!sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
+			return -1;
+		}
+
+		if (waitForAck(UBX_MSG_CFG_VALSET, UBX_CONFIG_TIMEOUT, true) < 0) {
+			return -1;
+		}
+	}
+
 	/* set configuration parameters */
 	int cfg_valset_msg_size = initCfgValset();
 	cfgValset<uint8_t>(UBX_CFG_KEY_NAVSPG_FIXMODE, 3 /* Auto 2d/3d */, cfg_valset_msg_size);
@@ -550,8 +562,6 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 		rate_meas = (_board == Board::u_blox9_F9P) ? 100 : 125;
 	}
 
-	// What rate do we want for MAX_M10S?
-
 	cfgValset<uint16_t>(UBX_CFG_KEY_RATE_MEAS, rate_meas, cfg_valset_msg_size);
 	cfgValset<uint16_t>(UBX_CFG_KEY_RATE_NAV, 1, cfg_valset_msg_size);
 	cfgValset<uint8_t>(UBX_CFG_KEY_RATE_TIMEREF, 0, cfg_valset_msg_size);
@@ -575,6 +585,10 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 	waitForAck(UBX_MSG_CFG_VALSET, UBX_CONFIG_TIMEOUT, false);
 
 	// configure active GNSS systems (leave signal bands as is)
+	// Note: For MAX-M10S configuration if changing from default. As per the
+	//       MAX-M10S integration guide UBX-20053088 - R03, see section
+	//       2.1.1.3 GNSS signal configuration for details on some restrictions.
+	//       Implementing these restrictions are a TODO item for MAX-M10S.
 	if (static_cast<int32_t>(config.gnss_systems) != 0) {
 		cfg_valset_msg_size = initCfgValset();
 
@@ -596,7 +610,6 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 		} else {
 			cfgValset<uint8_t>(UBX_CFG_KEY_SIGNAL_GAL_ENA, 0, cfg_valset_msg_size);
 		}
-
 
 		if (config.gnss_systems & GNSSSystemsMask::ENABLE_BEIDOU) {
 			UBX_DEBUG("GNSS Systems: Use BeiDou");
@@ -667,8 +680,11 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 				   config.interface_protocols & InterfaceProtocolsMask::I2C_IN_PROT_UBX, cfg_valset_msg_size);
 		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2CINPROT_NMEA,
 				   config.interface_protocols & InterfaceProtocolsMask::I2C_IN_PROT_NMEA, cfg_valset_msg_size);
-		// cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2CINPROT_RTCM3X,
-		// 		   config.interface_protocols & InterfaceProtocolsMask::I2C_IN_PROT_RTCM3X, cfg_valset_msg_size);
+		// There is no RTCM on MAX-M10S
+		if (_board != Board::u_blox10_MAX_M10S) {
+			cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2CINPROT_RTCM3X,
+					   config.interface_protocols & InterfaceProtocolsMask::I2C_IN_PROT_RTCM3X, cfg_valset_msg_size);
+		}
 		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2COUTPROT_UBX,
 				   config.interface_protocols & InterfaceProtocolsMask::I2C_OUT_PROT_UBX, cfg_valset_msg_size);
 		cfgValset<uint8_t>(UBX_CFG_KEY_CFG_I2COUTPROT_NMEA,
