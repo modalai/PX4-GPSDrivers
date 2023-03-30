@@ -1,6 +1,6 @@
 /****************************************************************************
  *
- *   Copyright (c) 2012-2015 PX4 Development Team. All rights reserved.
+ *   Copyright (c) 2012-2023 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -437,12 +437,12 @@ int GPSDriverUBX::configureDevicePreV27(const GNSSSystemsMask &gnssSystems)
 
 		// send message
 		if (!sendMessage(UBX_MSG_CFG_GNSS, (uint8_t *)&_buf, sizeof(_buf.payload_tx_cfg_gnss))) {
-			GPS_ERR("UBX CFG-GNSS message send failed");
+			UBX_DEBUG("UBX CFG-GNSS message send failed");
 			return -1;
 		}
 
 		if (waitForAck(UBX_MSG_CFG_GNSS, UBX_CONFIG_TIMEOUT, true) < 0) {
-			GPS_ERR("UBX CFG-GNSS message ACK failed");
+			UBX_DEBUG("UBX CFG-GNSS message ACK failed");
 			return -1;
 		}
 	}
@@ -481,6 +481,10 @@ int GPSDriverUBX::configureDevicePreV27(const GNSSSystemsMask &gnssSystems)
 		if (!configureMessageRateAndAck(UBX_MSG_NAV_VELNED, 1, true)) {
 			return -1;
 		}
+	}
+
+	if (!configureMessageRateAndAck(UBX_MSG_NAV_STATUS, 1, true)) {
+		return -1;
 	}
 
 	if (!configureMessageRateAndAck(UBX_MSG_NAV_DOP, 1, true)) {
@@ -627,7 +631,7 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 		}
 
 		if (!sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
-			GPS_ERR("UBX GNSS config send failed");
+			UBX_DEBUG("UBX GNSS config send failed");
 			return -1;
 		}
 
@@ -661,6 +665,7 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 	_use_nav_pvt = true;
 	cfgValsetPort(UBX_CFG_KEY_MSGOUT_UBX_NAV_DOP_I2C, 1, cfg_valset_msg_size);
 	cfgValsetPort(UBX_CFG_KEY_MSGOUT_UBX_NAV_SAT_I2C, (_satellite_info != nullptr) ? 10 : 0, cfg_valset_msg_size);
+	cfgValsetPort(UBX_CFG_KEY_MSGOUT_UBX_NAV_STATUS_I2C, 1, cfg_valset_msg_size);
 	cfgValsetPort(UBX_CFG_KEY_MSGOUT_UBX_MON_RF_I2C, 1, cfg_valset_msg_size);
 
 	if (!sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
@@ -1310,6 +1315,17 @@ GPSDriverUBX::payloadRxInit()
 
 		break;
 
+	case UBX_MSG_NAV_STATUS:
+		if (_rx_payload_length != sizeof(ubx_payload_rx_nav_status_t)) {
+			_rx_state = UBX_RXMSG_ERROR_LENGTH;
+
+		} else if (!_configured) {
+			_rx_state = UBX_RXMSG_IGNORE;        // ignore if not _configured
+
+		}
+
+		break;
+
 	case UBX_MSG_NAV_DOP:
 		if (_rx_payload_length != sizeof(ubx_payload_rx_nav_dop_t)) {
 			_rx_state = UBX_RXMSG_ERROR_LENGTH;
@@ -1950,6 +1966,15 @@ GPSDriverUBX::payloadRxDone()
 		_gps_position->fix_type		= _buf.payload_rx_nav_sol.gpsFix;
 		_gps_position->s_variance_m_s	= static_cast<float>(_buf.payload_rx_nav_sol.sAcc) * 1e-2f;	// from cm to m
 		_gps_position->satellites_used	= _buf.payload_rx_nav_sol.numSV;
+
+		ret = 1;
+		break;
+
+	case UBX_MSG_NAV_STATUS:
+		UBX_TRACE_RXMSG("Rx NAV-STATUS");
+
+		_gps_position->spoofing_state = (_buf.payload_rx_nav_status.flags2 & UBX_RX_NAV_STATUS_SPOOFDETSTATE_MASK) >>
+						UBX_RX_NAV_STATUS_SPOOFDETSTATE_SHIFT;
 
 		ret = 1;
 		break;
