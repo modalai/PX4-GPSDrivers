@@ -124,7 +124,16 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 				continue; // skip to next baudrate
 			}
 
-			UBX_DEBUG("baudrate set to %i", test_baudrate);
+			// M10 comes up in 9600 baud. So, if the current rate is 9600 then
+			// we set a flag indicating that this could be an M10
+			bool could_be_m10 = false;
+			if (test_baudrate == 9600) {
+				could_be_m10 = true;
+			}
+
+			if (could_be_m10) {
+				PX4_INFO("baudrate set to %i", test_baudrate);
+			}
 
 			setBaudrate(test_baudrate);
 
@@ -149,15 +158,36 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 
 			bool cfg_valset_success = false;
 
-			if (sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
+			// Note: The M10 will sometimes not respond to the first configuration
+			// message so there are a couple of retries on it.
+			int retries = 0;
+			if (could_be_m10) {
+				retries = 2;
+			}
 
-				// Note: The M10 comes up sending NMEA sentences at 9600. It can't
-				// respond with an ACK until the current sentence has completed transmission.
-				// This can take over a second so need a large timeout on this particular wait.
-				// Once it has acked this it will turn off the NMEA sentences and all is good
-				// for future transactions.
-				if (waitForAck(UBX_MSG_CFG_VALSET, 2000, true) == 0) {
-					cfg_valset_success = true;
+			// Note: The M10 comes up sending NMEA sentences at 9600. It can't
+			// respond with an ACK until the current sentence has completed transmission.
+			// This can take over a second so need a large timeout on this particular wait.
+			// Once it has acked this it will turn off the NMEA sentences and all is good
+			// for future transactions.
+			int ack_timeout = 100;
+			if (could_be_m10) {
+				ack_timeout = 2000;
+			}
+
+			for (int i = 1; i <= 1 + retries; i++) {
+				if (could_be_m10) {
+					PX4_INFO("Sending initial CFG_VALSET. Attempt: %d", i);
+				}
+
+				if (sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
+					if (waitForAck(UBX_MSG_CFG_VALSET, ack_timeout, true) == 0) {
+						cfg_valset_success = true;
+						if (could_be_m10) {
+							PX4_INFO("Got ack to initial CFG_VALSET!");
+						}
+						break;
+					}
 				}
 			}
 
@@ -1086,7 +1116,13 @@ GPSDriverUBX::receive(unsigned timeout)
 			return -1;
 
 		} else if (ret > 0) {
-			//UBX_DEBUG("read %d bytes", ret);
+			// PX4_INFO("read %d bytes", ret);
+			// 
+			// if (ret > 15) {
+			// 	PX4_INFO("0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x ",
+			// 			 buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], 
+			// 			 buf[9], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]);
+			// }
 
 			/* pass received bytes to the packet decoder */
 			for (int i = 0; i < ret; i++) {
@@ -2247,10 +2283,10 @@ GPSDriverUBX::payloadRxDone()
 	case UBX_MSG_RXM_RTCM:
 		UBX_TRACE_RXMSG("Rx RXM-RTCM");
 
-		_gps_position->rtcm_crc_failed = (_buf.payload_rx_rxm_rtcm.flags & UBX_RX_RXM_RTCM_CRCFAILED_MASK) != 0;
+		// _gps_position->rtcm_crc_failed = (_buf.payload_rx_rxm_rtcm.flags & UBX_RX_RXM_RTCM_CRCFAILED_MASK) != 0;
 
-		_gps_position->rtcm_msg_used  = (_buf.payload_rx_rxm_rtcm.flags & UBX_RX_RXM_RTCM_MSGUSED_MASK) >>
-						UBX_RX_RXM_RTCM_MSGUSED_SHIFT;
+		// _gps_position->rtcm_msg_used  = (_buf.payload_rx_rxm_rtcm.flags & UBX_RX_RXM_RTCM_MSGUSED_MASK) >>
+		// 				UBX_RX_RXM_RTCM_MSGUSED_SHIFT;
 
 		ret = 1;
 		break;
