@@ -170,7 +170,7 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 			// This can take over a second so need a large timeout on this particular wait.
 			// Once it has acked this it will turn off the NMEA sentences and all is good
 			// for future transactions.
-			int ack_timeout = 100;
+			int ack_timeout = UBX_CONFIG_TIMEOUT;
 			if (could_be_m10) {
 				ack_timeout = 2000;
 			}
@@ -227,7 +227,7 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 					continue;
 				}
 
-				if (waitForAck(UBX_MSG_CFG_PRT, UBX_CONFIG_TIMEOUT, false) < 0) {
+				if (waitForAck(UBX_MSG_CFG_PRT, 2000, false) < 0) {
 					/* try next baudrate */
 					continue;
 				}
@@ -860,7 +860,7 @@ int GPSDriverUBX::configureDevice(const GPSConfig &config, const int32_t uart2_b
 int GPSDriverUBX::initCfgValset()
 {
 	memset(&_buf.payload_tx_cfg_valset, 0, sizeof(_buf.payload_tx_cfg_valset));
-	_buf.payload_tx_cfg_valset.layers = UBX_CFG_LAYER_RAM;
+	_buf.payload_tx_cfg_valset.layers = UBX_CFG_LAYER_RAM | UBX_CFG_LAYER_BBR;
 	return sizeof(_buf.payload_tx_cfg_valset) - sizeof(_buf.payload_tx_cfg_valset.cfgData);
 }
 
