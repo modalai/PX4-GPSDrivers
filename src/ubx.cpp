@@ -124,16 +124,7 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 				continue; // skip to next baudrate
 			}
 
-			// M10 comes up in 9600 baud. So, if the current rate is 9600 then
-			// we set a flag indicating that this could be an M10
-			bool could_be_m10 = false;
-			if (test_baudrate == 9600) {
-				could_be_m10 = true;
-			}
-
-			if (could_be_m10) {
-				PX4_INFO("baudrate set to %i", test_baudrate);
-			}
+			PX4_INFO("GPS UART baudrate set to %i", test_baudrate);
 
 			setBaudrate(test_baudrate);
 
@@ -161,7 +152,7 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 			// Note: The M10 will sometimes not respond to the first configuration
 			// message so there are a couple of retries on it.
 			int retries = 0;
-			if (could_be_m10) {
+			if ((test_baudrate == 9600) || (test_baudrate == 115200)) {
 				retries = 2;
 			}
 
@@ -171,21 +162,15 @@ GPSDriverUBX::configure(unsigned &baudrate, const GPSConfig &config)
 			// Once it has acked this it will turn off the NMEA sentences and all is good
 			// for future transactions.
 			int ack_timeout = UBX_CONFIG_TIMEOUT;
-			if (could_be_m10) {
+			if (test_baudrate == 9600) {
 				ack_timeout = 2000;
 			}
 
 			for (int i = 1; i <= 1 + retries; i++) {
-				if (could_be_m10) {
-					PX4_INFO("Sending initial CFG_VALSET. Attempt: %d", i);
-				}
-
 				if (sendMessage(UBX_MSG_CFG_VALSET, (uint8_t *)&_buf, cfg_valset_msg_size)) {
 					if (waitForAck(UBX_MSG_CFG_VALSET, ack_timeout, true) == 0) {
 						cfg_valset_success = true;
-						if (could_be_m10) {
-							PX4_INFO("Got ack to initial CFG_VALSET!");
-						}
+						PX4_INFO("Got ack to initial CFG_VALSET!");
 						break;
 					}
 				}
