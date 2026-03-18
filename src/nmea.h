@@ -53,6 +53,68 @@ class RTCMParsing;
 #define NMEA_RECV_BUFFER_SIZE 1024
 #define NMEA_DEFAULT_BAUDRATE 115200
 
+struct SatEntry {
+	uint8_t svid;
+	uint8_t used;
+	uint8_t snr;
+	uint8_t elevation;
+	uint8_t azimuth;
+	uint64_t timestamp;
+};
+
+struct SatBuffer {
+	static constexpr uint8_t MAX_SATS = 40;
+	SatEntry sats[MAX_SATS];
+	uint8_t count{0};
+
+	int find(uint8_t svid) const {
+		for (uint8_t i = 0; i < count; i++) {
+			if (sats[i].svid == svid) { return i; }
+		}
+
+		return -1;
+	}
+
+	void upsert(uint8_t svid, uint8_t used, uint8_t snr, uint8_t elevation,
+		    uint8_t azimuth, uint64_t now) {
+		int idx = find(svid);
+
+		if (idx >= 0) {
+			if (snr >= sats[idx].snr) {
+				sats[idx].used = used;
+				sats[idx].snr = snr;
+				sats[idx].elevation = elevation;
+				sats[idx].azimuth = azimuth;
+			}
+
+			sats[idx].timestamp = now;
+
+		} else if (count < MAX_SATS) {
+			sats[count].svid = svid;
+			sats[count].used = used;
+			sats[count].snr = snr;
+			sats[count].elevation = elevation;
+			sats[count].azimuth = azimuth;
+			sats[count].timestamp = now;
+			count++;
+		}
+	}
+
+	void evictStale(uint64_t now, uint64_t max_age_us) {
+		uint8_t i = 0;
+
+		while (i < count) {
+			if ((now - sats[i].timestamp) > max_age_us) {
+				sats[i] = sats[count - 1];
+				count--;
+
+			} else {
+				i++;
+			}
+		}
+	}
+};
+
 class GPSDriverNMEA : public GPSHelper
 {
 public:
@@ -96,6 +158,7 @@ private:
 	double _last_VEL_timeUTC{0};
 	double _last_FIX_timeUTC{0};
 	uint64_t _last_timestamp_time{0};
+	uint64_t _pos_timestamp{0};		///< system time when GGA position was received (used as publish timestamp)
 
 	uint8_t _sat_num_gga{0};
 	uint8_t _sat_num_gns{0};
@@ -105,6 +168,11 @@ private:
 	uint8_t _sat_num_gagsv{0};
 	uint8_t _sat_num_gbgsv{0};
 	uint8_t _sat_num_bdgsv{0};
+
+	static constexpr uint64_t SAT_STALE_TIMEOUT_US = 2000000;
+	SatBuffer _sat_buf;
+
+	void publishSatelliteInfo();
 
 	bool _clock_set {false};
 
@@ -118,6 +186,7 @@ private:
 	bool _DOP_received{false};
 	bool _VEL_received{false};
 	bool _EPH_received{false};
+	bool _SACC_received{false};
 	bool _HEAD_received{false};
 
 	NMEADecodeState _decode_state{NMEADecodeState::uninit};
@@ -129,4 +198,6 @@ private:
 	RTCMParsing *_rtcm_parsing{nullptr};
 
 	float _heading_offset;
+
+	bool _pstmpv_active{false};  // Set true on first PSTMPV receipt; defers VTG/RMC triggers
 };

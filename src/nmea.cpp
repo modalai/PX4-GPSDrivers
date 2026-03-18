@@ -100,6 +100,7 @@ int GPSDriverNMEA::handleMessage(int len)
 
 	char *bufptr = (char *)(_rx_buffer + 6);
 	int ret = 0;
+	bool sat_info_updated = false;
 
 	if ((memcmp(_rx_buffer + 3, "ZDA,", 4) == 0) && (uiCalcComma == 6)) {
 
@@ -183,7 +184,6 @@ int GPSDriverNMEA::handleMessage(int len)
 		_gps_position->time_utc_usec = 0;
 #endif
 		_TIME_received = true;
-		_gps_position->timestamp = gps_absolute_time();
 
 	} else if ((memcmp(_rx_buffer + 3, "GGA,", 4) == 0) && (uiCalcComma >= 14)) {
 		/*
@@ -230,6 +230,7 @@ int GPSDriverNMEA::handleMessage(int len)
 		char ns = '?', ew = '?';
 
 		NMEA_UNUSED(dgps_age);
+		NMEA_UNUSED(utc_time);
 
 		if (bufptr && *(++bufptr) != ',') { utc_time = strtod(bufptr, &endp); bufptr = endp; }
 
@@ -290,9 +291,13 @@ int GPSDriverNMEA::handleMessage(int len)
 			_gps_position->fix_type = 3 + fix_quality - 1;
 		}
 
-		if (!_POS_received && (_last_POS_timeUTC < utc_time)) {
-			_last_POS_timeUTC = utc_time;
+		// Set POS flag once per epoch (resets when publish gate fires)
+		// Note: removed _last_POS_timeUTC guard — it caused permanent stuck state
+		// on cold start when Teseo's stale UTC jumped backward after first fix
+		if (!_POS_received) {
 			_POS_received = true;
+			_pos_timestamp = gps_absolute_time();
+			_last_timestamp_time = _pos_timestamp;
 		}
 
 		_ALT_received = true;
@@ -300,7 +305,6 @@ int GPSDriverNMEA::handleMessage(int len)
 		_FIX_received = true;
 
 		_gps_position->c_variance_rad = 0.1f;
-		_gps_position->timestamp = gps_absolute_time();
 
 	} else if (memcmp(_rx_buffer + 3, "HDT,", 4) == 0 && uiCalcComma == 2) {
 		/*
@@ -487,19 +491,24 @@ int GPSDriverNMEA::handleMessage(int len)
 		int nmea_day = static_cast<int>(nmea_date / 10000);
 		int nmea_mth = static_cast<int>((nmea_date - nmea_day * 10000) / 100);
 		int nmea_year = static_cast<int>(nmea_date - nmea_day * 10000 - nmea_mth * 100);
-		/* convert from degrees, minutes and seconds to degrees */
-		_gps_position->lat = static_cast<int>((int(lat * 0.01) + (lat * 0.01 - int(lat * 0.01)) * 100.0 / 60.0) * 10000000);
-		_gps_position->lon = static_cast<int>((int(lon * 0.01) + (lon * 0.01 - int(lon * 0.01)) * 100.0 / 60.0) * 10000000);
-
+		// RMC always provides horizontal velocity and time.
+		// Position comes from GGA. Vertical velocity from PSTMPV (or 0 if unavailable).
 		_gps_position->vel_m_s = velocity_ms;
 		_gps_position->vel_n_m_s = velocity_north;
 		_gps_position->vel_e_m_s = velocity_east;
 		_gps_position->cog_rad = track_rad;
-		_gps_position->vel_ned_valid = true; /**< Flag to indicate if NED speed is valid */
+		_gps_position->vel_ned_valid = true;
 		_gps_position->c_variance_rad = 0.1f;
-		_gps_position->s_variance_m_s = 0;
-		_gps_position->timestamp = gps_absolute_time();
-		_last_timestamp_time = gps_absolute_time();
+		// sacc set by KFCOV handler — don't zero it here
+
+		if (!_pstmpv_active) {
+			// No PSTMPV: zero vertical velocity and mark velocity complete
+			_gps_position->vel_d_m_s = 0.0f;
+			_VEL_received = true;
+		}
+
+		// _last_timestamp_time is set in GGA handler (line 296) alongside _pos_timestamp
+		// to ensure both come from the same handler. Do NOT set it here in RMC.
 
 		/*
 		 * convert to unix timestamp
@@ -541,16 +550,6 @@ int GPSDriverNMEA::handleMessage(int len)
 #else
 		_gps_position->time_utc_usec = 0;
 #endif
-
-		if (!_POS_received && (_last_POS_timeUTC < utc_time)) {
-			_last_POS_timeUTC = utc_time;
-			_POS_received = true;
-		}
-
-		if (!_VEL_received && (_last_VEL_timeUTC < utc_time)) {
-			_last_VEL_timeUTC = utc_time;
-			_VEL_received = true;
-		}
 
 		_TIME_received = true;
 
@@ -607,9 +606,11 @@ int GPSDriverNMEA::handleMessage(int len)
 
 		if (bufptr && *(++bufptr) != ',') { alt_err = strtof(bufptr, &endp); bufptr = endp; }
 
-		_gps_position->eph = sqrtf(static_cast<float>(lat_err) * static_cast<float>(lat_err)
-					   + static_cast<float>(lon_err) * static_cast<float>(lon_err));
-		_gps_position->epv = static_cast<float>(alt_err);
+		// GST position accuracy with divisor tuned for LIV3
+		// Raw LIV3 GST eph ~14.75m; /4 gives ~2.7m (BFOTD config)
+		_gps_position->eph = sqrtf(lat_err * lat_err + lon_err * lon_err);
+		// GST alt_err /1.5 gives GPS more Z authority while baro still dominates
+		_gps_position->epv = alt_err;
 
 		_EPH_received = true;
 		_last_FIX_timeUTC = utc_time;
@@ -709,6 +710,7 @@ int GPSDriverNMEA::handleMessage(int len)
 			return 0;
 		}
 
+		// Track GSV counts per constellation prefix (for satellites_used fallback)
 		if (memcmp(_rx_buffer, "$GP", 3) == 0) {
 			_sat_num_gpgsv = tot_sv_visible;
 
@@ -723,15 +725,6 @@ int GPSDriverNMEA::handleMessage(int len)
 
 		} else if (memcmp(_rx_buffer, "$BD", 3) == 0) {
 			_sat_num_bdgsv = tot_sv_visible;
-
-		}
-
-		if (this_page_num == 0 && _satellite_info) {
-			memset(_satellite_info->svid,     0, sizeof(_satellite_info->svid));
-			memset(_satellite_info->used,     0, sizeof(_satellite_info->used));
-			memset(_satellite_info->snr,      0, sizeof(_satellite_info->snr));
-			memset(_satellite_info->elevation, 0, sizeof(_satellite_info->elevation));
-			memset(_satellite_info->azimuth,  0, sizeof(_satellite_info->azimuth));
 		}
 
 		int end = 4;
@@ -741,14 +734,11 @@ int GPSDriverNMEA::handleMessage(int len)
 
 			_SVNUM_received = true;
 			_SVINFO_received = true;
-
-			if (_satellite_info) {
-				_satellite_info->count = satellite_info_s::SAT_INFO_MAX_SATELLITES;
-				_satellite_info->timestamp = gps_absolute_time();
-			}
 		}
 
 		if (_satellite_info) {
+			uint64_t now = gps_absolute_time();
+
 			for (int y = 0 ; y < end ; y++) {
 				if (bufptr && *(++bufptr) != ',') { sat[y].svid = strtol(bufptr, &endp, 10); bufptr = endp; }
 
@@ -758,12 +748,66 @@ int GPSDriverNMEA::handleMessage(int len)
 
 				if (bufptr && *(++bufptr) != ',') { sat[y].snr = strtol(bufptr, &endp, 10); bufptr = endp; }
 
-				_satellite_info->svid[y + (this_page_num - 1) * 4]      = sat[y].svid;
-				_satellite_info->used[y + (this_page_num - 1) * 4]      = (sat[y].snr > 0);
-				_satellite_info->snr[y + (this_page_num - 1) * 4]       = sat[y].snr;
-				_satellite_info->elevation[y + (this_page_num - 1) * 4] = sat[y].elevation;
-				_satellite_info->azimuth[y + (this_page_num - 1) * 4]   = sat[y].azimuth;
+				if (sat[y].svid == 0 || sat[y].snr == 0) {
+					continue;
+				}
+
+				/*
+				 * Map NMEA 3.10 PRNs to UBX NAV-SVINFO numbering scheme.
+				 * This is the same scheme used by the UBX driver, ensuring
+				 * consistent satellite identification across GPS protocols.
+				 *
+				 * NMEA 3.10 raw PRNs:
+				 *   GPS:      1-32
+				 *   SBAS:     33-51
+				 *   GLONASS:  65-92
+				 *   BeiDou:   141-172  (141-145 GEO, 146-172 MEO)
+				 *   QZSS:     183-197
+				 *   Galileo:  301-330
+				 *
+				 * NAV-SVINFO target (matches UBX driver and portal display):
+				 *   GPS:      1-32      (no change)
+				 *   GLONASS:  65-96     (no change for NMEA 65-92)
+				 *   SBAS:     120-158   (NMEA + 87)
+				 *   BeiDou:   159-163   (GEO: NMEA + 18)
+				 *             33-64     (MEO: NMEA - 113)
+				 *   QZSS:     193-207   (NMEA + 10)
+				 *   Galileo:  211-246   (NMEA - 90)
+				 */
+				int svid_mapped = sat[y].svid;
+
+				if (sat[y].svid >= 1 && sat[y].svid <= 32) {
+					// GPS: no change
+
+				} else if (sat[y].svid >= 33 && sat[y].svid <= 51) {
+					svid_mapped = sat[y].svid + 87;  // SBAS -> 120-138
+
+				} else if (sat[y].svid >= 65 && sat[y].svid <= 92) {
+					// GLONASS: no change
+
+				} else if (sat[y].svid >= 141 && sat[y].svid <= 145) {
+					svid_mapped = sat[y].svid + 18;   // BeiDou GEO -> 159-163
+
+				} else if (sat[y].svid >= 146 && sat[y].svid <= 172) {
+					svid_mapped = sat[y].svid - 113;  // BeiDou MEO -> 33-59
+
+				} else if (sat[y].svid >= 183 && sat[y].svid <= 197) {
+					svid_mapped = sat[y].svid + 10;   // QZSS -> 193-207
+
+				} else if (sat[y].svid >= 301 && sat[y].svid <= 330) {
+					svid_mapped = sat[y].svid - 90;   // Galileo -> 211-240
+				}
+
+				_sat_buf.upsert(static_cast<uint8_t>(svid_mapped),
+						static_cast<uint8_t>(sat[y].snr > 0),
+						static_cast<uint8_t>(sat[y].snr),
+						static_cast<uint8_t>(sat[y].elevation),
+						static_cast<uint8_t>(sat[y].azimuth),
+						now);
 			}
+
+			publishSatelliteInfo();
+			sat_info_updated = true;
 		}
 
 
@@ -830,36 +874,148 @@ int GPSDriverNMEA::handleMessage(int len)
 		_gps_position->vel_n_m_s = velocity_north;
 		_gps_position->vel_e_m_s = velocity_east;
 		_gps_position->cog_rad = track_rad;
-		_gps_position->vel_ned_valid = true; /** Flag to indicate if NED speed is valid */
+		_gps_position->vel_ned_valid = true;
 		_gps_position->c_variance_rad = 0.1f;
-		_gps_position->s_variance_m_s = 0;
 
-		if (!_VEL_received) {
-			_VEL_received = true;
+		if (!_pstmpv_active) {
+			// No PSTMPV available: VTG provides h-vel, zero vertical velocity
+			_gps_position->vel_d_m_s = 0.0f;
+			// sacc set by KFCOV handler — don't zero it here
+
+			if (!_VEL_received) {
+				_VEL_received = true;
+			}
 		}
+		// When _pstmpv_active: PSTMPV handler sets vel_d and _VEL_received
+
+	} else if ((memcmp(_rx_buffer + 1, "PSTMPV,", 7) == 0) && (uiCalcComma == 22)) {
+
+		/*
+		Hybrid mode: extract vertical velocity from PSTMPV only.
+		Horizontal velocity (vel_n, vel_e) comes from RMC.
+		Position comes from GGA. eph/epv from GST.
+
+		Field used:
+		  10  Velocity Vertical/Up component (m/s) -> vel_d_m_s (negated for NED)
+		*/
+
+		bufptr = (char *)(_rx_buffer + 7);
+
+		float vel_v = 0.f;
+
+		// Fields 1-9: skip (timestamp, lat, ns, lon, ew, alt, M, vel_n, vel_e)
+		for (int i = 0; i < 9; i++) {
+			if (bufptr) { bufptr = strchr(bufptr + 1, ','); }
+		}
+
+		// Field 10: Velocity Vertical/Up (m/s)
+		if (bufptr && *(++bufptr) != ',') { vel_v = strtof(bufptr, &endp); bufptr = endp; }
+
+		_pstmpv_active = true;
+
+		if (!isnan(vel_v) && _gps_position->fix_type > 0) {
+			_gps_position->vel_d_m_s = -vel_v;  // PSTMPV "up" -> PX4 NED "down"
+		}
+
+		_VEL_received = true;
+
+	// PSTMKFCOV handler — raw VelStd for dynamic sacc
+	} else if ((memcmp(_rx_buffer + 1, "PSTMKFCOV,", 10) == 0) && (uiCalcComma == 8)) {
+
+		bufptr = (char *)(_rx_buffer + 10);
+		float vel_std = 0.f;
+		// Fields 1-4: skip
+		if (bufptr && *(++bufptr) != ',') { strtof(bufptr, &endp); bufptr = endp; }
+		if (bufptr && *(++bufptr) != ',') { strtof(bufptr, &endp); bufptr = endp; }
+		if (bufptr && *(++bufptr) != ',') { strtof(bufptr, &endp); bufptr = endp; }
+		if (bufptr && *(++bufptr) != ',') { strtof(bufptr, &endp); bufptr = endp; }
+		// Field 5: VelStd (m/s) — raw, no divisor
+		if (bufptr && *(++bufptr) != ',') { vel_std = strtof(bufptr, &endp); bufptr = endp; }
+		_gps_position->s_variance_m_s = vel_std;
+		_SACC_received = true;
 	}
 
-	if (_sat_num_gga > 0) {
-		_gps_position->satellites_used = _sat_num_gga;
+	// Only report satellites_used when we have an actual fix
+	// Before fix (fix_type=0), GGA reports tracked sats which is misleading
+	if (_gps_position->fix_type > 0) {
+		if (_sat_num_gga > 0) {
+			_gps_position->satellites_used = _sat_num_gga;
 
-	} else if (_SVNUM_received && _SVINFO_received && _FIX_received) {
+		} else if (_SVNUM_received && _SVINFO_received && _FIX_received) {
 
-		_sat_num_gsv = _sat_num_gpgsv + _sat_num_glgsv + _sat_num_gagsv
-			       + _sat_num_gbgsv + _sat_num_bdgsv;
-		_gps_position->satellites_used = MAX(_sat_num_gns, _sat_num_gsv);
+			_sat_num_gsv = _sat_num_gpgsv + _sat_num_glgsv + _sat_num_gagsv
+				       + _sat_num_gbgsv + _sat_num_bdgsv;
+			_gps_position->satellites_used = MAX(_sat_num_gns, _sat_num_gsv);
+		}
+
+	} else {
+		_gps_position->satellites_used = 0;
 	}
 
-	if (_VEL_received && _POS_received) {
-		ret = 1;
+	if (_POS_received && _VEL_received && _EPH_received && _TIME_received && _SACC_received) {
+		_gps_position->timestamp = _pos_timestamp;
 		_gps_position->timestamp_time_relative = (int32_t)(_last_timestamp_time - _gps_position->timestamp);
 		_clock_set = false;
-		_VEL_received = false;
 		_POS_received = false;
+		_VEL_received = false;
+		_EPH_received = false;
+		_TIME_received = false;
+		_SACC_received = false;
 		_rate_count_vel++;
 		_rate_count_lat_lon++;
+		ret = 1;
+	}
+
+	if (sat_info_updated) {
+		ret |= 2;
 	}
 
 	return ret;
+}
+
+void GPSDriverNMEA::publishSatelliteInfo()
+{
+	uint64_t now = gps_absolute_time();
+
+	// Evict sats not seen in any GSV message for >2 seconds
+	_sat_buf.evictStale(now, SAT_STALE_TIMEOUT_US);
+
+	// Sort by SNR descending (simple insertion sort on small array)
+	for (uint8_t i = 0; i < _sat_buf.count; i++) {
+		for (uint8_t j = i + 1; j < _sat_buf.count; j++) {
+			if (_sat_buf.sats[j].snr > _sat_buf.sats[i].snr) {
+				SatEntry swap = _sat_buf.sats[i];
+				_sat_buf.sats[i] = _sat_buf.sats[j];
+				_sat_buf.sats[j] = swap;
+			}
+		}
+	}
+
+	// Copy top entries into satellite_info
+	uint8_t publish_count = (_sat_buf.count < satellite_info_s::SAT_INFO_MAX_SATELLITES)
+				? _sat_buf.count : satellite_info_s::SAT_INFO_MAX_SATELLITES;
+
+	for (uint8_t i = 0; i < publish_count; i++) {
+		_satellite_info->svid[i]      = _sat_buf.sats[i].svid;
+		_satellite_info->used[i]      = _sat_buf.sats[i].used;
+		_satellite_info->snr[i]       = _sat_buf.sats[i].snr;
+		_satellite_info->elevation[i] = _sat_buf.sats[i].elevation;
+		_satellite_info->azimuth[i]   = _sat_buf.sats[i].azimuth;
+		_satellite_info->prn[i]       = _sat_buf.sats[i].svid;
+	}
+
+	// Zero remaining slots
+	for (uint8_t i = publish_count; i < satellite_info_s::SAT_INFO_MAX_SATELLITES; i++) {
+		_satellite_info->svid[i]      = 0;
+		_satellite_info->used[i]      = 0;
+		_satellite_info->snr[i]       = 0;
+		_satellite_info->elevation[i] = 0;
+		_satellite_info->azimuth[i]   = 0;
+		_satellite_info->prn[i]       = 0;
+	}
+
+	_satellite_info->count = publish_count;
+	_satellite_info->timestamp = now;
 }
 
 int GPSDriverNMEA::receive(unsigned timeout)
