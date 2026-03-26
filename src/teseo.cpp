@@ -35,7 +35,7 @@
  * @file teseo.cpp
  *
  * STMicro Teseo LIV3F/LIV4F GPS driver implementation.
- * Fully self-contained message handling — does not call base class handleMessage().
+ * Fully self-contained message handling — does not call base class handleMessage(), due to it handling messages differently. 
  *
  * Teseo NMEA epoch message order (confirmed from raw NMEA captures):
  *   LIV3: RMC -> GGA -> GST -> GSA(x2-3) -> GSV(pages) -> KFCOV -> PSTMPV
@@ -47,8 +47,7 @@
  *
  * Epoch integrity (LIV3): UTC timestamp from RMC must match PSTMPV.
  *   LIV3 timestamps are 100% consistent across all tested captures.
- *   LIV4 PSTMPVRAW timestamps can be one tick behind (~16% of epochs),
- *   so timestamp verification for LIV4 is deferred to future work.
+ *  
  *
  * LIV3 vs LIV4 detection:
  *   - PSTMPV present   -> LIV3 (vertical velocity only, ddd.d precision)
@@ -96,9 +95,9 @@ int GPSDriverTeseo::handleMessage(int len)
 	int ret = 0;
 	bool sat_info_updated = false;
 
-	// =========================================================================
-	// RMC — first message of LIV3 epoch, provides time + horizontal velocity
-	// =========================================================================
+	// ================================================================================
+	// RMC — first message of LIV3 epoch, provides time + horizontal velocity + cog rad
+	// ================================================================================
 	if ((memcmp(_rx_buffer + 3, "RMC,", 4) == 0) && (uiCalcComma >= 11)) {
 
 		double utc_time = 0.0;
