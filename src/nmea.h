@@ -69,6 +69,26 @@ public:
 	int receive(unsigned timeout) override;
 	int configure(unsigned &baudrate, const GPSConfig &config) override;
 
+protected:
+	/**
+	 * Parse and handle a complete NMEA sentence.
+	 * Made virtual so subclasses (e.g. GPSDriverTeseo) can override
+	 * message handling while reusing receive/configure/parseChar.
+	 */
+	virtual int handleMessage(int len);
+
+	sensor_gps_s *_gps_position {nullptr};
+	satellite_info_s *_satellite_info {nullptr};
+	uint64_t _last_timestamp_time{0};
+	bool _clock_set {false};
+	uint8_t _rx_buffer[NMEA_RECV_BUFFER_SIZE] {};
+
+	uint8_t _sat_num_gpgsv{0};
+	uint8_t _sat_num_glgsv{0};
+	uint8_t _sat_num_gagsv{0};
+	uint8_t _sat_num_gbgsv{0};
+	uint8_t _sat_num_bdgsv{0};
+
 private:
 	void handleHeading(float heading_deg, float heading_stddev_deg);
 
@@ -83,30 +103,19 @@ private:
 	};
 
 	void decodeInit(void);
-	int handleMessage(int len);
 	int parseChar(uint8_t b);
 
 	int32_t read_int();
 	double read_float();
 	char read_char();
 
-	sensor_gps_s *_gps_position {nullptr};
-	satellite_info_s *_satellite_info {nullptr};
 	double _last_POS_timeUTC{0};
 	double _last_VEL_timeUTC{0};
 	double _last_FIX_timeUTC{0};
-	uint64_t _last_timestamp_time{0};
 
 	uint8_t _sat_num_gga{0};
 	uint8_t _sat_num_gns{0};
 	uint8_t _sat_num_gsv{0};
-	uint8_t _sat_num_gpgsv{0};
-	uint8_t _sat_num_glgsv{0};
-	uint8_t _sat_num_gagsv{0};
-	uint8_t _sat_num_gbgsv{0};
-	uint8_t _sat_num_bdgsv{0};
-
-	bool _clock_set {false};
 
 //  check if we got all basic essential packages we need
 	bool _TIME_received{false};
@@ -121,7 +130,6 @@ private:
 	bool _HEAD_received{false};
 
 	NMEADecodeState _decode_state{NMEADecodeState::uninit};
-	uint8_t _rx_buffer[NMEA_RECV_BUFFER_SIZE] {};
 	uint16_t _rx_buffer_bytes{0};
 
 	OutputMode _output_mode{OutputMode::GPS};
