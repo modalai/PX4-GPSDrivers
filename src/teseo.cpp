@@ -380,9 +380,9 @@ int GPSDriverTeseo::handleMessage(int len)
 				 *   SBAS:     33-51             SBAS:     120-158  (NMEA + 87)
 				 *   GLONASS:  65-92             GLONASS:  65-96    (no change)
 				 *   BeiDou:   141-145 (GEO)     BeiDou:   159-163  (NMEA + 18)
-				 *   BeiDou:   146-172 (MEO)     BeiDou:   33-59    (NMEA - 113)
+				 *   BeiDou:   146-177 (MEO)     BeiDou:   33-64    (NMEA - 113)
 				 *   QZSS:     183-197           QZSS:     193-207  (NMEA + 10)
-				 *   Galileo:  301-330           Galileo:  211-240  (NMEA - 90)
+				 *   Galileo:  301-336           Galileo:  211-246  (NMEA - 90)
 				 */
 				int svid_mapped = sat[y].svid;
 
@@ -394,11 +394,11 @@ int GPSDriverTeseo::handleMessage(int len)
 					// GLONASS: no change
 				} else if (sat[y].svid >= 141 && sat[y].svid <= 145) {
 					svid_mapped = sat[y].svid + 18;
-				} else if (sat[y].svid >= 146 && sat[y].svid <= 172) {
+				} else if (sat[y].svid >= 146 && sat[y].svid <= 177) {
 					svid_mapped = sat[y].svid - 113;
 				} else if (sat[y].svid >= 183 && sat[y].svid <= 197) {
 					svid_mapped = sat[y].svid + 10;
-				} else if (sat[y].svid >= 301 && sat[y].svid <= 330) {
+				} else if (sat[y].svid >= 301 && sat[y].svid <= 336) {
 					svid_mapped = sat[y].svid - 90;
 				}
 
