@@ -125,10 +125,40 @@ public:
 
 	~GPSDriverTeseo() {}
 
+	int configure(unsigned &baudrate, const GPSConfig &config) override;
+
 protected:
 	int handleMessage(int len) override;
 
 private:
+	/**
+	 * One-shot recovery for a factory-default LIV4.
+	 *
+	 * A LIV4 that has never been through the ModalAI config script emits no
+	 * PSTMPVRAW, so _is_liv4 is never set and the publish trigger in the GSA
+	 * handler never fires - the driver parses everything and publishes
+	 * satellite_info but never a position, no matter how good the fix is.
+	 * This walks the baud rates, and if it finds a unit emitting NMEA but
+	 * neither PSTMPV (LIV3) nor PSTMPVRAW (configured LIV4), applies the same
+	 * CDB settings the Arduino liv4_config sketch does, saves to NVM and
+	 * resets. Runs at most once per boot. Only compiled into a recovery build.
+	 */
+	void liv4RunRecovery();
+
+	/** Send a $PSTM... sentence, appending the NMEA checksum and CRLF. */
+	void liv4SendPstm(const char *body);
+
+	/**
+	 * Listen for duration_ms, reporting whether any NMEA and whether the
+	 * Teseo variant markers were seen. Non-printable bytes are mapped to '.'
+	 * so a corrupted stream (common on an unconfigured unit at 9600) still
+	 * matches.
+	 */
+	void liv4Sniff(unsigned duration_ms, bool &saw_nmea, bool &saw_pstmpv, bool &saw_pstmpvraw);
+
+	/** $PSTMGETPAR,<id> round trip. Returns false if no reply. */
+	bool liv4QueryCdb(const char *id, uint32_t &value);
+
 	void handlePSTMPV(char *bufptr);
 	void handlePSTMPVRAW(char *bufptr);
 	void handlePSTMKFCOV(char *bufptr);

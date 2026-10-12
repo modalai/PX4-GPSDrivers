@@ -69,6 +69,290 @@
 #define NMEA_UNUSED(x) (void)x;
 #define TESEO_WARN(...)  {GPS_WARN(__VA_ARGS__);}
 
+/****************************************************************************
+ * RECOVERY BUILD SWITCH
+ *
+ * Set to 1 only for the one-shot firmware used to rescue a Teseo LIV4 that
+ * left the factory without ever being run through the ModalAI config script.
+ * Such a unit sits at 1 Hz / 9600 baud emitting only the ST default NMEA set
+ * (GGA RMC VTG GST GSA GSV GBS) with no PSTMPVRAW, which means _is_liv4 is
+ * never set, the publish trigger in the GSA handler is gated off, and
+ * sensor_gps is never published however good the fix is. satellite_info keeps
+ * publishing, which makes it look like the driver is healthy.
+ *
+ * Flash this build, let it run for a minute or two, then go back to the
+ * release build - the settings are saved to the receiver's NVM and persist.
+ *
+ * MUST be 0 in anything that ships.
+ ****************************************************************************/
+#define TESEO_LIV4_RECOVERY_BUILD 1
+
+#if TESEO_LIV4_RECOVERY_BUILD
+
+// Baud rates to search, factory default first. 19200 is deliberately absent:
+// the VOXL2 qurt serial layer rejects it (SerialImpl::validateBaudrate), so
+// including it only costs a scan slot and prints a spurious ERROR.
+static const unsigned s_liv4_scan_bauds[] = {9600, 115200, 230400, 38400, 57600};
+
+// What the unit is left at. Matches $PSTMSETPAR,1102,0x0b in liv4_config.ino,
+// and is already in the base NMEA driver's autobaud list, so the release build
+// finds it again with no parameter changes.
+static constexpr unsigned LIV4_TARGET_BAUD = 230400;
+
+void GPSDriverTeseo::liv4SendPstm(const char *body)
+{
+	uint8_t cs = 0;
+
+	for (const char *p = body + 1; *p != '\0'; p++) {
+		cs ^= (uint8_t)(*p);
+	}
+
+	char out[96];
+	int n = snprintf(out, sizeof(out), "%s*%02X\r\n", body, cs);
+
+	if (n > 0 && n < (int)sizeof(out)) {
+		write(out, n);
+		TESEO_WARN("LIV4CFG TX %s*%02X", body, cs);
+	}
+}
+
+void GPSDriverTeseo::liv4Sniff(unsigned duration_ms, bool &saw_nmea, bool &saw_pstmpv,
+			       bool &saw_pstmpvraw)
+{
+	saw_nmea = false;
+	saw_pstmpv = false;
+	saw_pstmpvraw = false;
+
+	// Rolling text window. An unconfigured unit at 9600 overruns its own link
+	// and roughly 14% of received bytes are framing garbage including nulls,
+	// so every byte is sanitised to keep strstr() usable across the window.
+	char window[512];
+	unsigned wlen = 0;
+	memset(window, 0, sizeof(window));
+
+	const gps_abstime deadline = gps_absolute_time() + (gps_abstime)duration_ms * 1000;
+	uint8_t buf[256];
+
+	while (gps_absolute_time() < deadline) {
+		int r = read(buf, sizeof(buf), 200);
+
+		if (r <= 0) {
+			continue;
+		}
+
+		for (int i = 0; i < r; i++) {
+			if (wlen >= sizeof(window) - 1) {
+				// Keep the tail so a marker split across reads still matches.
+				const unsigned keep = sizeof(window) / 2;
+				memmove(window, window + (wlen - keep), keep);
+				wlen = keep;
+				memset(window + wlen, 0, sizeof(window) - wlen);
+			}
+
+			const uint8_t c = buf[i];
+			window[wlen++] = (c >= 32 && c <= 126) ? (char)c : '.';
+		}
+
+		window[wlen] = '\0';
+
+		if (strstr(window, "$PSTMPVRAW,") != nullptr) { saw_pstmpvraw = true; }
+
+		if (strstr(window, "$PSTMPV,") != nullptr)    { saw_pstmpv = true; }
+
+		// Require a full talker+sentence match, not just "$G". Sniffing at the
+		// wrong baud produces random bytes and a two-character match comes up
+		// by chance often enough to misread a configured unit as a blank one.
+		static const char *const kNmeaMarkers[] = {
+			"$GNGGA,", "$GNRMC,", "$GNGSA,", "$GPGSV,", "$GNGST,", "$GPGGA,", "$GPRMC,"
+		};
+
+		for (unsigned m = 0; m < sizeof(kNmeaMarkers) / sizeof(kNmeaMarkers[0]); m++) {
+			if (strstr(window, kNmeaMarkers[m]) != nullptr) {
+				saw_nmea = true;
+				break;
+			}
+		}
+	}
+}
+
+bool GPSDriverTeseo::liv4QueryCdb(const char *id, uint32_t &value)
+{
+	char match[32];
+	snprintf(match, sizeof(match), "$PSTMSETPAR,%s,", id);
+
+	for (int attempt = 0; attempt < 3; attempt++) {
+		char cmd[32];
+		snprintf(cmd, sizeof(cmd), "$PSTMGETPAR,%s", id);
+		liv4SendPstm(cmd);
+
+		char window[512];
+		unsigned wlen = 0;
+		memset(window, 0, sizeof(window));
+
+		const gps_abstime deadline = gps_absolute_time() + 1500 * 1000;
+		uint8_t buf[256];
+
+		while (gps_absolute_time() < deadline) {
+			int r = read(buf, sizeof(buf), 200);
+
+			if (r <= 0) {
+				continue;
+			}
+
+			for (int i = 0; i < r; i++) {
+				if (wlen >= sizeof(window) - 1) {
+					const unsigned keep = sizeof(window) / 2;
+					memmove(window, window + (wlen - keep), keep);
+					wlen = keep;
+					memset(window + wlen, 0, sizeof(window) - wlen);
+				}
+
+				const uint8_t c = buf[i];
+				window[wlen++] = (c >= 32 && c <= 126) ? (char)c : '.';
+			}
+
+			window[wlen] = '\0';
+
+			// The receiver answers a GETPAR with a SETPAR-formatted line.
+			const char *hit = strstr(window, match);
+
+			if (hit != nullptr) {
+				const char *val = hit + strlen(match);
+				char *endp = nullptr;
+				unsigned long parsed = strtoul(val, &endp, 0);
+
+				if (endp != val) {
+					value = (uint32_t)parsed;
+					TESEO_WARN("LIV4CFG CDB-%s reads 0x%08lX", id, (unsigned long)value);
+					return true;
+				}
+			}
+		}
+
+		TESEO_WARN("LIV4CFG CDB-%s no reply (attempt %d)", id, attempt + 1);
+	}
+
+	return false;
+}
+
+void GPSDriverTeseo::liv4RunRecovery()
+{
+	// Survives the gps module deleting and recreating the helper every few
+	// seconds, so the sequence is attempted once rather than on every retry.
+	static bool s_done = false;
+
+	if (s_done) {
+		return;
+	}
+
+	TESEO_WARN("LIV4CFG ===== Teseo LIV4 recovery build, scanning =====");
+
+	for (unsigned i = 0; i < sizeof(s_liv4_scan_bauds) / sizeof(s_liv4_scan_bauds[0]); i++) {
+		const unsigned baud = s_liv4_scan_bauds[i];
+		setBaudrate(baud);
+		gps_usleep(100000);
+
+		bool nmea = false, pv = false, pvraw = false;
+		liv4Sniff(2500, nmea, pv, pvraw);
+		TESEO_WARN("LIV4CFG baud %u: nmea=%d PSTMPV=%d PSTMPVRAW=%d",
+			   baud, (int)nmea, (int)pv, (int)pvraw);
+
+		if (!nmea) {
+			continue;
+		}
+
+		if (pvraw) {
+			TESEO_WARN("LIV4CFG already configured (PSTMPVRAW present), leaving alone");
+			s_done = true;
+			return;
+		}
+
+		if (pv) {
+			TESEO_WARN("LIV4CFG this is a LIV3 (PSTMPV present), leaving alone");
+			s_done = true;
+			return;
+		}
+
+		TESEO_WARN("LIV4CFG unconfigured unit at %u baud, applying config", baud);
+
+		// CDB-200 and CDB-227 are read-modify-write so the reserved bits
+		// (3,18,19,20 on CDB-200) are left at whatever the factory set.
+		uint32_t v200 = 0;
+		uint32_t v227 = 0;
+
+		if (!liv4QueryCdb("1200", v200) || !liv4QueryCdb("1227", v227)) {
+			TESEO_WARN("LIV4CFG ABORT: receiver did not answer GETPAR, will retry");
+			return;     // deliberately not marking done, so the next pass retries
+		}
+
+		v200 |=  0x00010000;    // GPS constellation ON       (bit 16)
+		v200 |=  0x00400000;    // GPS use for position ON    (bit 22)
+		v200 &= ~0x00020000;    // GLONASS constellation OFF  (bit 17)
+		v200 &= ~0x00200000;    // GLONASS use for pos OFF    (bit 21)
+		v200 &= ~0x00000080;    // QZSS distributed acq OFF   (bit 7)
+		v200 &= ~0x00800000;    // QZSS use for position OFF  (bit 23)
+		v200 |=  0x00000004;    // SBAS ON                    (bit 2)
+
+		v227 |=  0x00000040;    // Galileo constellation ON   (bit 6)
+		v227 |=  0x00000080;    // Galileo use for pos ON     (bit 7)
+		v227 |=  0x00000100;    // BeiDou constellation ON    (bit 8)
+		v227 |=  0x00000200;    // BeiDou use for pos ON      (bit 9)
+		v227 &= ~0x08000000;    // IRNSS constellation OFF    (bit 27)
+		v227 &= ~0x10000000;    // IRNSS use for pos OFF      (bit 28)
+
+		char cmd[64];
+		snprintf(cmd, sizeof(cmd), "$PSTMSETPAR,1200,0x%08lX", (unsigned long)v200);
+		liv4SendPstm(cmd);
+		gps_usleep(200000);
+
+		snprintf(cmd, sizeof(cmd), "$PSTMSETPAR,1227,0x%08lX", (unsigned long)v227);
+		liv4SendPstm(cmd);
+		gps_usleep(200000);
+
+		// NMEA message list: GGA(1) GSA(2) GST(3) RMC(6) GSV(19) KFCOV(27)
+		liv4SendPstm("$PSTMSETPAR,1201,0x0808004E");
+		gps_usleep(200000);
+		liv4SendPstm("$PSTMSETPAR,1228,0x00004000");    // PSTMPVRAW
+		gps_usleep(200000);
+		liv4SendPstm("$PSTMSETPAR,1102,0x0b");          // baud 230400
+		gps_usleep(200000);
+		liv4SendPstm("$PSTMSETPAR,1130,0x00");          // CPU 192 MHz
+		gps_usleep(200000);
+		liv4SendPstm("$PSTMSETPAR,1303,2.000000e-01");  // 5 Hz
+		gps_usleep(200000);
+
+		liv4SendPstm("$PSTMSAVEPAR");
+		gps_usleep(500000);
+		liv4SendPstm("$PSTMSRR");
+
+		// Match liv4_config.ino: give the receiver 3s to come back up after the
+		// reset before talking to it at the new rate. The base NMEA configure()
+		// autobaud runs straight after this and would otherwise race the boot.
+		gps_usleep(3000000);
+
+		setBaudrate(LIV4_TARGET_BAUD);
+		s_done = true;
+
+		TESEO_WARN("LIV4CFG ===== DONE: saved to NVM and reset =====");
+		TESEO_WARN("LIV4CFG unit should now be 5 Hz / %u baud with PSTMPVRAW",
+			   LIV4_TARGET_BAUD);
+		TESEO_WARN("LIV4CFG reflash the normal px4 build; settings persist in NVM");
+		return;
+	}
+
+	TESEO_WARN("LIV4CFG no NMEA seen at any baud - check wiring/power, nothing done");
+}
+
+#endif // TESEO_LIV4_RECOVERY_BUILD
+
+int GPSDriverTeseo::configure(unsigned &baudrate, const GPSConfig &config)
+{
+#if TESEO_LIV4_RECOVERY_BUILD
+	liv4RunRecovery();
+#endif
+	return GPSDriverNMEA::configure(baudrate, config);
+}
+
 GPSDriverTeseo::GPSDriverTeseo(GPSCallbackPtr callback, void *callback_user,
 			       sensor_gps_s *gps_position,
 			       satellite_info_s *satellite_info,
