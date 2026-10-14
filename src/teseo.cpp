@@ -310,11 +310,10 @@ int GPSDriverTeseo::handleMessage(int len)
 		if (fix_mode > 1) {
 			_gps_position->hdop = static_cast<float>(hdop);
 			_gps_position->vdop = static_cast<float>(vdop);
-			_TESEO_dop_received = true;
 		}
 
 		// LIV4: GSA is the last standard message before GSV — publish here
-		if (_is_liv4 && _TESEO_dop_received) {
+		if (_is_liv4) {
 			ret = tryPublishEpoch();
 		}
 
@@ -372,34 +371,31 @@ int GPSDriverTeseo::handleMessage(int len)
 				}
 
 				/*
-				 * Map NMEA 3.10 PRNs to UBX NAV-SVINFO numbering scheme.
-				 * Same scheme used by the UBX driver for consistent satellite IDs.
+				 * Map NMEA PRNs to the UBX NAV-SVINFO svid scheme (same IDs as the
+				 * UBX driver), keyed by the GSV talker since PRNs overlap across
+				 * constellations. LIV4 emits native PRNs, LIV3 an offset; strip to
+				 * native, then apply the UBX ranges. BeiDou is widened past UBX's 37
+				 * cap to fit the whole constellation without overlap.
 				 *
-				 * NMEA 3.10 raw PRNs:          NAV-SVINFO target:
-				 *   GPS:      1-32              GPS:      1-32     (no change)
-				 *   SBAS:     33-51             SBAS:     120-158  (NMEA + 87)
-				 *   GLONASS:  65-92             GLONASS:  65-96    (no change)
-				 *   BeiDou:   141-145 (GEO)     BeiDou:   159-163  (NMEA + 18)
-				 *   BeiDou:   146-177 (MEO)     BeiDou:   33-64    (NMEA - 113)
-				 *   QZSS:     183-197           QZSS:     193-207  (NMEA + 10)
-				 *   Galileo:  301-336           Galileo:  211-246  (NMEA - 90)
+				 *   GPS -> 1-32   GLONASS -> 65-96   SBAS -> 120-158
+				 *   BeiDou -> 33-64, 159-189   QZSS -> 193-202   Galileo -> 211-246
 				 */
-				int svid_mapped = sat[y].svid;
+				int raw = sat[y].svid;
+				int svid_mapped = raw;
 
-				if (sat[y].svid >= 1 && sat[y].svid <= 32) {
-					// GPS: no change
-				} else if (sat[y].svid >= 33 && sat[y].svid <= 51) {
-					svid_mapped = sat[y].svid + 87;
-				} else if (sat[y].svid >= 65 && sat[y].svid <= 92) {
-					// GLONASS: no change
-				} else if (sat[y].svid >= 141 && sat[y].svid <= 145) {
-					svid_mapped = sat[y].svid + 18;
-				} else if (sat[y].svid >= 146 && sat[y].svid <= 177) {
-					svid_mapped = sat[y].svid - 113;
-				} else if (sat[y].svid >= 183 && sat[y].svid <= 197) {
-					svid_mapped = sat[y].svid + 10;
-				} else if (sat[y].svid >= 301 && sat[y].svid <= 336) {
-					svid_mapped = sat[y].svid - 90;
+				if (memcmp(_rx_buffer, "$GP", 3) == 0) {
+					// GPS 1-32 and SBAS 120-158 pass through; NMEA SBAS 33-64 -> 120-151
+					if (raw >= 33 && raw <= 64) { svid_mapped = raw + 87; }
+				} else if (memcmp(_rx_buffer, "$GL", 3) == 0) {
+					svid_mapped = (raw <= 32) ? raw + 64 : raw;
+				} else if (memcmp(_rx_buffer, "$GA", 3) == 0) {
+					int nat = (raw > 300) ? raw - 300 : raw;
+					svid_mapped = nat + 210;
+				} else if (memcmp(_rx_buffer, "$GB", 3) == 0 || memcmp(_rx_buffer, "$BD", 3) == 0) {
+					int nat = (raw > 150) ? raw - 150 : raw;
+					svid_mapped = (nat <= 32) ? nat + 32 : nat + 126;
+				} else if (memcmp(_rx_buffer, "$GQ", 3) == 0) {
+					svid_mapped = (raw <= 10) ? raw + 192 : raw;
 				}
 
 				_sat_buf.upsert(static_cast<uint8_t>(svid_mapped),
@@ -600,7 +596,6 @@ int GPSDriverTeseo::tryPublishEpoch()
 		_TESEO_eph_received = false;
 		_TESEO_time_received = false;
 		_TESEO_sacc_received = false;
-		_TESEO_dop_received = false;
 
 		_rate_count_vel++;
 		_rate_count_lat_lon++;

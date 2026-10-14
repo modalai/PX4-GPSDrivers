@@ -80,13 +80,10 @@ struct SatBuffer {
 		int idx = find(svid);
 
 		if (idx >= 0) {
-			if (snr >= sats[idx].snr) {
-				sats[idx].used = used;
-				sats[idx].snr = snr;
-				sats[idx].elevation = elevation;
-				sats[idx].azimuth = azimuth;
-			}
-
+			sats[idx].used = used;
+			sats[idx].snr = snr;
+			sats[idx].elevation = elevation;
+			sats[idx].azimuth = azimuth;
 			sats[idx].timestamp = now;
 
 		} else if (count < MAX_SATS) {
@@ -156,7 +153,6 @@ private:
 	bool _TESEO_eph_received{false};
 	bool _TESEO_time_received{false};
 	bool _TESEO_sacc_received{false};
-	bool _TESEO_dop_received{false};
 
 	uint64_t _teseo_pos_timestamp{0};
 
