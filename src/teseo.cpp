@@ -320,7 +320,7 @@ int GPSDriverTeseo::handleMessage(int len)
 	// =========================================================================
 	// GSV — satellite info (PRN, CN0, elevation, azimuth)
 	// =========================================================================
-	} else if ((memcmp(_rx_buffer + 3, "GSV,", 4) == 0)) {
+	} else if ((memcmp(_rx_buffer + 3, "GSV,", 4) == 0) && (uiCalcComma >= 3)) {
 
 		int all_page_num = 0, this_page_num = 0, tot_sv_visible = 0;
 		struct gsv_sat {
@@ -334,7 +334,13 @@ int GPSDriverTeseo::handleMessage(int len)
 		if (bufptr && *(++bufptr) != ',') { this_page_num = strtol(bufptr, &endp, 10); bufptr = endp; }
 		if (bufptr && *(++bufptr) != ',') { tot_sv_visible = strtol(bufptr, &endp, 10); bufptr = endp; }
 
-		if ((this_page_num < 1) || (this_page_num > all_page_num)) {
+		if ((this_page_num < 1) || (this_page_num > all_page_num) || (tot_sv_visible < 0)) {
+			return 0;
+		}
+
+		const uint64_t page_start = static_cast<uint64_t>(this_page_num - 1) * 4;
+
+		if (page_start > static_cast<uint64_t>(tot_sv_visible)) {
 			return 0;
 		}
 
@@ -351,16 +357,16 @@ int GPSDriverTeseo::handleMessage(int len)
 			_sat_num_bdgsv = tot_sv_visible;
 		}
 
-		int end = 4;
-
-		if (this_page_num == all_page_num) {
-			end = tot_sv_visible - (this_page_num - 1) * 4;
-		}
+		const int remaining_satellites = tot_sv_visible - static_cast<int>(page_start);
+		const int satellites_in_message = (uiCalcComma - 3) / 4;
+		const int satellites_in_page = remaining_satellites < satellites_in_message ?
+					       remaining_satellites : satellites_in_message;
+		const int satellites_to_parse = satellites_in_page < 4 ? satellites_in_page : 4;
 
 		if (_satellite_info) {
 			uint64_t now = gps_absolute_time();
 
-			for (int y = 0; y < end; y++) {
+			for (int y = 0; y < satellites_to_parse; y++) {
 				if (bufptr && *(++bufptr) != ',') { sat[y].svid = strtol(bufptr, &endp, 10); bufptr = endp; }
 				if (bufptr && *(++bufptr) != ',') { sat[y].elevation = strtol(bufptr, &endp, 10); bufptr = endp; }
 				if (bufptr && *(++bufptr) != ',') { sat[y].azimuth = strtol(bufptr, &endp, 10); bufptr = endp; }
